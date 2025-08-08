@@ -1,5 +1,3 @@
-# model.py
-
 import inspect
 from dataclasses import dataclass
 import torch

@@ -27,7 +27,6 @@ from torch.distributed.checkpoint.state_dict import get_model_state_dict, get_op
 # set up Tensor Parallelism.
 # torchrun command sets the env variables WORLD_SIZE
 assert torch.cuda.is_available(), "CUDA is not available, please run on a multi-GPU machine"
-# torch.distributed.init_process_group(backend='nccl')
 device_type = torch.accelerator.current_accelerator().type
 tp_world_size = int(os.environ['WORLD_SIZE'])
 tp_mesh = init_device_mesh(device_type, (int(os.environ["WORLD_SIZE"]),))
@@ -60,7 +59,6 @@ Set the precision to high for better training speed when using Ampere/Hopper GPU
 
 # create a GPT model instance (model is loaded initially on CPU)
 model = GPT(GPTConfig(vocab_size=50304))
-# model = GPT.from_pretrained("gpt2") # or init from OpenAI GPT-2
 
 # Save initialized checkpoint using the state dict APIs.
 # We will reload this checkpoint later to the parallel model. You can read more about state dict APIs here:
@@ -229,9 +227,7 @@ if set_sac:
     if master_process:
         print("Applying Selective Activation Checkpointing (SAC) to the model...")
     # Initialize SAC
-    sac = SAC()
-    # Apply SAC to the model
-    model = sac.apply_sac(model)
+    sac = apply_sac(model)
 
 '''
 Define the optimizer based on the GPT-2 training.
@@ -252,7 +248,7 @@ for step in range(max_steps):
     for micro_step in range(grad_accum_steps):
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
-        logits, _ = model(x) 
+        logits = model(x) 
         with loss_parallel():
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
             loss = loss / grad_accum_steps

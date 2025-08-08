@@ -21,10 +21,10 @@ from torch.distributed.checkpoint.state_dict import get_model_state_dict, get_op
 
 # set up Tensor Parallelism.
 assert torch.cuda.is_available(), "Pipeline parallelism requires CUDA"
+torch.distributed.init_process_group(backend='nccl')
 device_type = torch.accelerator.current_accelerator().type
 # torchrun command sets the env variables WORLD_SIZE
 pp_mesh = init_device_mesh(device_type, (int(os.environ["WORLD_SIZE"]),))
-# torch.distributed.init_process_group(backend='nccl')
 pp_rank = pp_mesh.get_rank()
 pp_local_rank = pp_mesh.get_local_rank()
 pp_world_size = pp_mesh.size()
@@ -68,114 +68,19 @@ train_loader = DataLoaderLite(B=B, T=T, master_process=master_process)
 
 # Create model
 model = GPT(GPTConfig(vocab_size=50304))
-
-# def get_modules(model, num_stages):
-#     """
-#     Get the modules for each stage in the pipeline.
-#     We will partition the model into num_stages parts, each containing a subset of the transformer layers.
-#     """
-#     # Calculate the number of transformer layers per stage
-#     layers_per_stage = model.config.n_layer // num_stages
-#     module_names_per_stage = []
-    
-#     for stage in range(num_stages):
-#         stage_modules = []        
-#         if stage == 0:
-#             stage_modules.extend(['transformer.wte', 'transformer.wpe'])
-#             start_layer = 0
-#             end_layer = layers_per_stage
-#         elif stage == num_stages - 1:
-#             start_layer = stage * layers_per_stage
-#             end_layer = model.config.n_layer
-#             for layer_idx in range(start_layer, end_layer):
-#                 stage_modules.append(f'transformer.h.{layer_idx}')
-#             stage_modules.extend(['transformer.ln_f', 'lm_head'])
-#         else:
-#             start_layer = stage * layers_per_stage
-#             end_layer = (stage + 1) * layers_per_stage
-        
-#         # Add transformer layers for non-last stages or if not handled above
-#         if stage != num_stages - 1:
-#             for layer_idx in range(start_layer, end_layer):
-#                 stage_modules.append(f'transformer.h.{layer_idx}')
-        
-#         module_names_per_stage.append(stage_modules)        
-    
-#     # if master_process:
-#     #     print(f"Layers per stage: {layers_per_stage}")
-#     #     print(f"Module names per model part:")
-#     #     for i, stage_modules in enumerate(module_names_per_stage):
-#     #         print(f"  Stage {i}: {stage_modules}")
-    
-#     return module_names_per_stage
-
-# # Get the modules for each stage
-# module_names_per_stage = get_modules(model, num_stages)
-
-# # https://docs.pytorch.org/tutorials/intermediate/pipelining_tutorial.html#step-1-partition-the-transformer-model
-# def build_stage_from_modules(
-#         stage_idx: int, module_names: list[str], num_stages: int, whole_model: nn.Module
-#     ) :
-#     """
-#     Partition the model based on the provided module names for the given stage index.
-#     The transformer blocks which are not part of the current stage will be removed.
-#     The forward function of our model requires (token embeddings, position embeddings, layer norms, lm_head), so we will keep them as None if they are not part of the current stage.
-#     The function returns a PipelineStage object for the current stage and the modified model.
-#     """
-#     model = copy.deepcopy(whole_model) # Create a copy of the model 
-#     modules_to_keep = set(module_names)
-    
-#     transformer = model.transformer    
-#     for component_name in list(transformer.keys()):
-#         component = transformer[component_name]        
-#         full_component_name = f"transformer.{component_name}"  
-
-#         if isinstance(component, nn.ModuleList):
-#             layers_to_keep = []  
-
-#             for i, layer in enumerate(component):
-#                 layer_name = f"{full_component_name}.{i}"
-#                 if layer_name in modules_to_keep:
-#                     layers_to_keep.append(i)     
-
-#             if layers_to_keep:
-#                 new_layers = nn.ModuleList()
-#                 for i in layers_to_keep:
-#                     new_layers.append(component[i])
-#                 transformer[component_name] = new_layers
-#             else:
-#                 del transformer[component_name] # Transformer blocks not in this stage will be removed
-                
-#         elif full_component_name in modules_to_keep:
-#             # Keep components like wte, wpe, ln_f as they are
-#             pass
-#         else:
-#             # Remove components not in modules_to_keep
-#             transformer[component_name] = None # wte, wpe, ln_f will be set to None if not in this stage
-
-    
-#     # Handle lm_head (outside transformer)
-#     if 'lm_head' not in modules_to_keep:
-#         if hasattr(model, 'lm_head'):
-#             model.lm_head = None # lm_head will be set to None if not in this stage
-
-#     stage = PipelineStage(
-#         model,
-#         stage_idx,
-#         num_stages,
-#         device,
-#     )
-#     return stage, model
-
-
-
-    
+   
 # Build the stage for the current stage index
 # This will create a PipelineStage object with the model partitioned for the current stage
 # The model will only contain the modules that are part of the current stage
-# stage, model = build_stage_from_modules(stage_index, module_names_per_stage[stage_index], num_stages, model)
-
+# https://docs.pytorch.org/tutorials/intermediate/pipelining_tutorial.html#step-1-partition-the-transformer-model
 def partition_model_for_stage(model, stage_idx, num_stages):
+    """
+    Partition the model based on the provided module names for the given stage index.
+    The transformer blocks which are not part of the current stage will be removed.
+    The forward function of our model requires (token embeddings, position embeddings, layer norms, lm_head), so we will keep them as None if they are not part of the current stage.
+    The function returns a PipelineStage object for the current stage and the modified model.
+    """
+
     model = copy.deepcopy(model)  # Create a copy first!
 
     layers_per_stage = model.config.n_layer // num_stages
@@ -268,7 +173,7 @@ if master_process and wandb_run:
     wandb.login()
     wandb.init(
         project="nanoGPT-distributed",
-        name=f"PP-{pp_world_size}-gacc-{grad_accum_steps}",
+        name=f"PP-rank-{pp_world_size}-gacc-{grad_accum_steps}",
         config={
             "total_batch_size_tokens": total_batch_size,
             "micro_batch_size": B,
@@ -387,6 +292,9 @@ if model_save:
     # Save optimizer state
     torch.save(optimizer.state_dict(), f"model_stage_{stage_index}_optim.pth")
 
+    print("model and optimizer state dicts saved")
+
 
 # Clean up the distributed environment
 torch.distributed.destroy_process_group()
+

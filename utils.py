@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import functools
 import torch.distributed as dist
-import math
 import tiktoken
 from typing import Optional
 import os

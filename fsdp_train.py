@@ -160,7 +160,7 @@ if master_process and wandb_run:
     wandb.login()
     wandb.init(
         project="nanoGPT-distributed",
-        name=f"FSDP2-{ddp_world_size}-gacc-{grad_accum_steps}",
+        name=f"FSDP2-rank-{ddp_world_size}-gacc-{grad_accum_steps}",
         config={
             "total_batch_size_tokens": total_batch_size,
             "micro_batch_size": B,
